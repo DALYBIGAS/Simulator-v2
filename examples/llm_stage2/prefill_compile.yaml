@@ -1,0 +1,22 @@
+compile:
+  model_name: mini-llm
+  kernel_name: qkv_prefill
+  mode: prefill
+  match_op: linalg.batch_matmul
+  dtype: bf16
+  inputs:
+    - name: query
+      dtype: bf16
+      shape: [1, 32, 4096]
+    - name: key
+      dtype: bf16
+      shape: [1, 32, 4096]
+    - name: value
+      dtype: bf16
+      shape: [1, 32, 4096]
+  outputs:
+    - name: output
+      dtype: bf16
+      shape: [1, 32, 4096]
+  op_chain: [linalg.batch_matmul, linalg.generic, linalg.generic]
+  outline_function: qkv_prefill_kernel

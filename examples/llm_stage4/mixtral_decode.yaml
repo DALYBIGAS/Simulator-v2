@@ -1,0 +1,24 @@
+compile:
+  model_name: mixtral-8x7b
+  architecture: mixtral
+  kernel_name: mixtral_decode
+  mode: decode
+  match_op: linalg.batch_matmul
+  dtype: bf16
+  batch_size: 1
+  seq_len: 1
+  num_heads: 32
+  head_dim: 128
+  hidden_size: 4096
+  kv_cache: true
+  num_experts: 8
+  top_k_experts: 2
+  op_chain: [linalg.batch_matmul, linalg.generic, linalg.batch_matmul]
+  outline_function: mixtral_decode_kernel
+  tags: [attention, moe, router]
+  inputs:
+    - {name: token, dtype: bf16, shape: [1, 1, 4096], layout: row-major, role: activation}
+    - {name: key_cache, dtype: bf16, shape: [32, 8192, 128], layout: row-major, role: kv-cache}
+    - {name: value_cache, dtype: bf16, shape: [32, 8192, 128], layout: row-major, role: kv-cache}
+  outputs:
+    - {name: out, dtype: bf16, shape: [1, 1, 4096], layout: row-major, role: activation}

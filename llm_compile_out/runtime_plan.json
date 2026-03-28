@@ -1,0 +1,82 @@
+{
+  "buffers": [
+    {
+      "tensor": {
+        "name": "hidden_states",
+        "dtype": "bf16",
+        "rank": 3,
+        "shape": [
+          1,
+          2048,
+          4096
+        ],
+        "stride": [
+          8388608,
+          4096,
+          1
+        ]
+      },
+      "memory_space": "sram",
+      "double_buffered": true
+    },
+    {
+      "tensor": {
+        "name": "w_qkv",
+        "dtype": "bf16",
+        "rank": 2,
+        "shape": [
+          4096,
+          12288
+        ],
+        "stride": [
+          12288,
+          1
+        ]
+      },
+      "memory_space": "global",
+      "double_buffered": false
+    },
+    {
+      "tensor": {
+        "name": "qkv_out",
+        "dtype": "bf16",
+        "rank": 3,
+        "shape": [
+          1,
+          2048,
+          12288
+        ],
+        "stride": [
+          25165824,
+          12288,
+          1
+        ]
+      },
+      "memory_space": "global",
+      "double_buffered": false
+    }
+  ],
+  "launches": [
+    {
+      "kernel_name": "llama_prefill",
+      "grid": [
+        16,
+        1,
+        32
+      ],
+      "block": [
+        128,
+        128,
+        64
+      ],
+      "stream_id": 0,
+      "waits_on": [
+        "dma-ready"
+      ]
+    }
+  ],
+  "events": [
+    "dma-ready",
+    "kernel-done"
+  ]
+}

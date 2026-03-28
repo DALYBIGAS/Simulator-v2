@@ -1,0 +1,9 @@
+# Ignore image files
+*.jpg
+*.png
+
+# Ignore PyTorch model files
+*.pt
+
+# Ignore log files
+*.log

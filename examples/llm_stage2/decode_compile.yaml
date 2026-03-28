@@ -1,0 +1,19 @@
+compile:
+  model_name: mini-llm
+  kernel_name: attention_decode
+  mode: decode
+  match_op: linalg.matmul
+  dtype: bf16
+  inputs:
+    - name: query
+      dtype: bf16
+      shape: [1, 1, 4096]
+    - name: kv_cache
+      dtype: bf16
+      shape: [32, 4096, 2048]
+  outputs:
+    - name: output
+      dtype: bf16
+      shape: [1, 1, 4096]
+  op_chain: [linalg.matmul, linalg.generic]
+  outline_function: attention_decode_kernel

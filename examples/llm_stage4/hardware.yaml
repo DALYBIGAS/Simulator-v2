@@ -1,0 +1,21 @@
+hardware:
+  name: legend-llm-chip-v4
+  sram:
+    size_bytes: 8388608
+    banks: 32
+    bank_width_bytes: 64
+  dma:
+    bandwidth_gbps: 768
+    max_request_bytes: 131072
+    supports_async: true
+    supports_2d: true
+  compute:
+    rows: 128
+    cols: 128
+    supported_dtypes: [bf16, fp16, int8, f32]
+    native_mma_m: 16
+    native_mma_n: 16
+    native_mma_k: 32
+  supports_kv_cache: true
+  supports_fused_epilogue: true
+  supports_prefill_decode_split: true

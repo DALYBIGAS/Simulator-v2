@@ -1,0 +1,51 @@
+"""Model-family presets for LLM-oriented compiler planning."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Dict, List
+
+
+@dataclass(frozen=True)
+class ModelProfile:
+    family: str
+    aliases: List[str] = field(default_factory=list)
+    attention_type: str = "mha"
+    kv_layout: str = "paged"
+    default_dtype: str = "bf16"
+    preferred_match_op: str = "linalg.matmul"
+    decode_tile_sizes: List[int] = field(default_factory=lambda: [64, 128, 32])
+    prefill_tile_sizes: List[int] = field(default_factory=lambda: [128, 128, 64])
+    extra_tags: List[str] = field(default_factory=list)
+    grouped_query_attention: bool = False
+    mixture_of_experts: bool = False
+    rotary_embedding: bool = True
+    supports_prefix_cache: bool = True
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, object]:
+        return asdict(self)
+
+
+_MODEL_PROFILES = [
+    ModelProfile(family="llama", aliases=["llama2", "llama3", "meta-llama"], attention_type="gqa", kv_layout="paged", extra_tags=["llama", "attention", "rope"], grouped_query_attention=True, notes="LLaMA-family preset tuned for RoPE and grouped-query attention decode flows."),
+    ModelProfile(family="deepseek", aliases=["deepseek-v2", "deepseek-v3"], attention_type="mla", kv_layout="compressed", decode_tile_sizes=[64, 128, 64], prefill_tile_sizes=[128, 128, 128], extra_tags=["deepseek", "attention", "mla", "moe"], grouped_query_attention=True, mixture_of_experts=True, notes="DeepSeek-family preset biased toward MLA-style attention and MoE routing."),
+    ModelProfile(family="opt", aliases=["facebook-opt"], attention_type="mha", kv_layout="contiguous", extra_tags=["opt", "attention", "learned-pos"], rotary_embedding=False, supports_prefix_cache=False, notes="OPT-family preset for classic MHA decoder blocks with contiguous KV layout."),
+    ModelProfile(family="mixtral", aliases=["mistral-moe", "mixtral-8x7b"], attention_type="gqa", kv_layout="paged", decode_tile_sizes=[64, 128, 64], prefill_tile_sizes=[128, 128, 128], extra_tags=["mixtral", "attention", "moe", "router"], grouped_query_attention=True, mixture_of_experts=True, notes="Mixtral-family preset with GQA attention and expert-routing aware passes."),
+    ModelProfile(family="qwen3", aliases=["qwen", "qwen2", "qwen2.5", "qwen3-moe"], attention_type="gqa", kv_layout="paged", decode_tile_sizes=[64, 128, 32], prefill_tile_sizes=[128, 128, 64], extra_tags=["qwen3", "attention", "rope"], grouped_query_attention=True, notes="Qwen-family preset for paged KV cache decode and RoPE-heavy attention fusion."),
+]
+
+
+def supported_model_families() -> List[str]:
+    return [profile.family for profile in _MODEL_PROFILES]
+
+
+def get_model_profile(name: str | None) -> ModelProfile | None:
+    if not name:
+        return None
+    normalized = name.strip().lower()
+    for profile in _MODEL_PROFILES:
+        if normalized == profile.family or normalized in profile.aliases:
+            return profile
+    return None
+

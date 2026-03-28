@@ -1,0 +1,283 @@
+{
+  "model_name": "llama3-8b",
+  "kernel_name": "llama_prefill",
+  "mode": "prefill",
+  "payload_mlir": "examples/llm_stage4/payload.mlir",
+  "hardware": {
+    "name": "legend-llm-chip-v4",
+    "sram": {
+      "size_bytes": 8388608,
+      "banks": 32,
+      "bank_width_bytes": 64
+    },
+    "dma": {
+      "bandwidth_gbps": 768.0,
+      "max_request_bytes": 131072,
+      "supports_async": true,
+      "supports_2d": true
+    },
+    "compute": {
+      "rows": 128,
+      "cols": 128,
+      "supported_dtypes": [
+        "bf16",
+        "fp16",
+        "int8",
+        "f32"
+      ],
+      "native_mma_m": 16,
+      "native_mma_n": 16,
+      "native_mma_k": 32
+    },
+    "supports_kv_cache": true,
+    "supports_fused_epilogue": true,
+    "supports_prefill_decode_split": true
+  },
+  "compile_spec": {
+    "model_name": "llama3-8b",
+    "kernel_name": "llama_prefill",
+    "mode": "prefill",
+    "match_op": "linalg.batch_matmul",
+    "dtype": "bf16",
+    "model_family": null,
+    "attention_type": "mha",
+    "kv_layout": "paged",
+    "grouped_query_attention": false,
+    "mixture_of_experts": false,
+    "num_experts": 0,
+    "experts_per_token": 0,
+    "inputs": [
+      {
+        "name": "hidden_states",
+        "dtype": "bf16",
+        "shape": [
+          1,
+          2048,
+          4096
+        ],
+        "layout": "row-major",
+        "role": "activation"
+      },
+      {
+        "name": "w_qkv",
+        "dtype": "bf16",
+        "shape": [
+          4096,
+          12288
+        ],
+        "layout": "row-major",
+        "role": "weight"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "qkv_out",
+        "dtype": "bf16",
+        "shape": [
+          1,
+          2048,
+          12288
+        ],
+        "layout": "row-major",
+        "role": "activation"
+      }
+    ],
+    "op_chain": [
+      "linalg.batch_matmul",
+      "linalg.generic",
+      "linalg.generic"
+    ],
+    "outline_function": "llama_prefill_kernel",
+    "batch_size": 1,
+    "seq_len": 2048,
+    "num_heads": 32,
+    "num_kv_heads": 32,
+    "head_dim": 128,
+    "hidden_size": 4096,
+    "kv_cache": false,
+    "notes": [],
+    "tags": [
+      "attention",
+      "rope"
+    ]
+  },
+  "model_profile": {
+    "family": "llama",
+    "aliases": [
+      "llama2",
+      "llama3",
+      "llama-2",
+      "llama-3"
+    ],
+    "default_dtype": "bf16",
+    "match_op": "linalg.batch_matmul",
+    "attention_impl": "grouped-query-attention",
+    "kv_cache_layout": "head-major",
+    "tags": [
+      "attention",
+      "rope",
+      "rmsnorm"
+    ],
+    "notes": "Decoder-only dense transformer with RoPE and RMSNorm."
+  },
+  "compiler_options": {
+    "mode": "prefill",
+    "tile_sizes": [
+      128,
+      128,
+      64
+    ],
+    "enable_fusion": true,
+    "enable_async_dma": true,
+    "enable_memory_promotion": true,
+    "enable_vectorization": true,
+    "outline_kernels": true,
+    "preferred_match_op": "linalg.batch_matmul"
+  },
+  "selected_kernel": {
+    "name": "qkv-projection",
+    "op_type": "linalg.batch_matmul",
+    "modes": [
+      "prefill",
+      "train-fwd"
+    ],
+    "supported_dtypes": [
+      "bf16",
+      "fp16",
+      "f32"
+    ],
+    "tags": [
+      "attention",
+      "projection"
+    ],
+    "preferred_tile_sizes": [
+      128,
+      128,
+      64
+    ],
+    "uses_kv_cache": false,
+    "notes": "Dense QKV projection path optimized for long-sequence prefill."
+  },
+  "pass_pipeline": {
+    "graph": [
+      "canonicalize",
+      "cse"
+    ],
+    "kernel": [
+      "llm-fuse-attention-chain",
+      "llm-tile[128,128,64]",
+      "llm-fuse-epilogue",
+      "llm-select-kernel[qkv-projection]"
+    ],
+    "buffer": [
+      "llm-promote-sram",
+      "llm-insert-async-dma"
+    ],
+    "runtime": [
+      "llm-emit-events",
+      "llm-emit-launch-plan"
+    ],
+    "backend": [
+      "lower-affine",
+      "convert-scf-to-cf",
+      "finalize-memref-to-llvm"
+    ]
+  },
+  "runtime_plan": {
+    "buffers": [
+      {
+        "tensor": {
+          "name": "hidden_states",
+          "dtype": "bf16",
+          "rank": 3,
+          "shape": [
+            1,
+            2048,
+            4096
+          ],
+          "stride": [
+            8388608,
+            4096,
+            1
+          ]
+        },
+        "memory_space": "sram",
+        "double_buffered": true
+      },
+      {
+        "tensor": {
+          "name": "w_qkv",
+          "dtype": "bf16",
+          "rank": 2,
+          "shape": [
+            4096,
+            12288
+          ],
+          "stride": [
+            12288,
+            1
+          ]
+        },
+        "memory_space": "global",
+        "double_buffered": false
+      },
+      {
+        "tensor": {
+          "name": "qkv_out",
+          "dtype": "bf16",
+          "rank": 3,
+          "shape": [
+            1,
+            2048,
+            12288
+          ],
+          "stride": [
+            25165824,
+            12288,
+            1
+          ]
+        },
+        "memory_space": "global",
+        "double_buffered": false
+      }
+    ],
+    "launches": [
+      {
+        "kernel_name": "llama_prefill",
+        "grid": [
+          16,
+          1,
+          32
+        ],
+        "block": [
+          128,
+          128,
+          64
+        ],
+        "stream_id": 0,
+        "waits_on": [
+          "dma-ready"
+        ]
+      }
+    ],
+    "events": [
+      "dma-ready",
+      "kernel-done"
+    ]
+  },
+  "estimated_metrics": {
+    "model_family": "llama",
+    "estimated_flops": 206158430208.0,
+    "estimated_bytes": 50331648.0,
+    "estimated_latency_ms": 6144000.0,
+    "estimated_tokens_per_sec": 0.3333333333333333,
+    "estimated_bandwidth_gbps": 768.0,
+    "estimated_compute_utilization": 1.0
+  },
+  "artifacts": {
+    "tile_transform": "llm_compile_out/llama_prefill.tile.mlir",
+    "fuse_transform": "llm_compile_out/llama_prefill.fuse.mlir",
+    "outline_transform": "llm_compile_out/llama_prefill.outline.mlir",
+    "driver_stub": "llm_compile_out/llama_prefill_driver.c"
+  }
+}

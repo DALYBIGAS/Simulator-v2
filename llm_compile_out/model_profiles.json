@@ -1,0 +1,93 @@
+{
+  "profiles": [
+    {
+      "family": "llama",
+      "aliases": [
+        "llama2",
+        "llama3",
+        "llama-2",
+        "llama-3"
+      ],
+      "default_dtype": "bf16",
+      "match_op": "linalg.batch_matmul",
+      "attention_impl": "grouped-query-attention",
+      "kv_cache_layout": "head-major",
+      "tags": [
+        "attention",
+        "rope",
+        "rmsnorm"
+      ],
+      "notes": "Decoder-only dense transformer with RoPE and RMSNorm."
+    },
+    {
+      "family": "deepseek",
+      "aliases": [
+        "deepseek-v2",
+        "deepseek-v3"
+      ],
+      "default_dtype": "bf16",
+      "match_op": "linalg.batch_matmul",
+      "attention_impl": "mla-or-moe",
+      "kv_cache_layout": "latent-head-major",
+      "tags": [
+        "moe",
+        "rope",
+        "attention"
+      ],
+      "notes": "Supports dense and MoE variants; prefer async DMA for expert dispatch."
+    },
+    {
+      "family": "opt",
+      "aliases": [
+        "facebook/opt",
+        "opt-6.7b"
+      ],
+      "default_dtype": "fp16",
+      "match_op": "linalg.batch_matmul",
+      "attention_impl": "multi-head-attention",
+      "kv_cache_layout": "sequence-major",
+      "tags": [
+        "gelu",
+        "layernorm",
+        "attention"
+      ],
+      "notes": "OPT-style decoder blocks with LayerNorm and GELU MLP."
+    },
+    {
+      "family": "mixtral",
+      "aliases": [
+        "mixtral-8x7b",
+        "mixtral-8x22b"
+      ],
+      "default_dtype": "bf16",
+      "match_op": "linalg.batch_matmul",
+      "attention_impl": "moe-attention",
+      "kv_cache_layout": "head-major",
+      "tags": [
+        "moe",
+        "router",
+        "attention"
+      ],
+      "notes": "Mixture-of-experts decoder; route and grouped GEMM are critical."
+    },
+    {
+      "family": "qwen3",
+      "aliases": [
+        "qwen",
+        "qwen2",
+        "qwen2.5",
+        "qwen3"
+      ],
+      "default_dtype": "bf16",
+      "match_op": "linalg.batch_matmul",
+      "attention_impl": "grouped-query-attention",
+      "kv_cache_layout": "head-major",
+      "tags": [
+        "attention",
+        "rope",
+        "swiglu"
+      ],
+      "notes": "QWEN/QWEN3 family with GQA and SwiGLU-oriented epilogues."
+    }
+  ]
+}

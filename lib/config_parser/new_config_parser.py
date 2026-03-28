@@ -1,0 +1,854 @@
+import subprocess
+import sys
+from itertools import combinations
+
+class AccCluster:
+    def __init__(
+        self,
+        name: str,
+        dmas,
+        accs,
+        base_address: int,
+        working_dir: str,
+        config_path: str,
+        hw_config_path: str = None
+    ):
+        self.name = name
+        self.dmas = dmas
+        self.accs = accs
+        self.base_address = base_address
+        self.top_address = base_address
+        self.config_path = config_path
+        # Do this to point the hardware configuration to the
+        # sys config YAML file when HWPath isn't defined
+        self.hw_config_path = hw_config_path
+        self.fusable_ops = FusableOps()
+        self.process_config(working_dir=working_dir)
+
+    def _get_dimensions(self, dType):
+        """Helper function to extract the number of dimensions from a dType string."""
+        if not dType.startswith("<") or not dType.endswith(">"):
+            raise ValueError(f"Invalid dType format: {dType}")
+        # Remove the angle brackets and split by 'x'
+        shape_str = dType[1:-1].split("x")
+        # The last element is the data type (e.g., "f32"), so ignore it
+        return len(shape_str) - 1
+
+    def process_config(self, working_dir):
+        dma_class = []
+        acc_class = []
+        top_address = self.base_address
+
+        # Parse DMAs
+        for dma in self.dmas:
+            for device_dict in dma['DMA']:
+                # Decide whether the DMA is NonCoherent or Stream
+                if 'NonCoherent' in device_dict['Type']:
+                    pio_size = 21
+                    pio_masters = []
+                    if 'PIOMaster' in device_dict:
+                        pio_masters.extend(
+                            (device_dict['PIOMaster'].split(',')))
+                    if 'InterruptNum' in device_dict:
+                        dma_class.append(
+                            DMA(
+                                name=device_dict['Name'],
+                                pio=pio_size,
+                                pio_masters=pio_masters,
+                                address=top_address,
+                                dmaType=device_dict['Type'],
+                                int_num=device_dict['InterruptNum'],
+                                size=device_dict['BufferSize'],
+                                maxReq=device_dict['MaxReqSize']
+                            )
+                        )
+                    else:
+                        dma_class.append(
+                            DMA(
+                                name=device_dict['Name'],
+                                pio=pio_size,
+                                pio_masters=pio_masters,
+                                address=top_address,
+                                dmaType=device_dict['Type'],
+                                int_num=device_dict['BufferSize'],
+                                size=device_dict['MaxReqSize']
+                            )
+                        )
+                    aligned_inc = int(pio_size) + (64 - (int(pio_size) % 64))
+                    top_address = top_address + aligned_inc
+                elif 'Stream' in device_dict['Type']:
+                    pio_size = 32
+                    statusSize = 4
+                    pio_masters = []
+
+                    alignedStatusInc = int(statusSize) + \
+                        (64 - (int(statusSize) % 64))
+                    aligned_inc = int(pio_size) + (64 - (int(pio_size) % 64))
+
+                    statusAddress = top_address + aligned_inc
+
+                    if 'PIOMaster' in device_dict:
+                        pio_masters.extend(
+                            (device_dict['PIOMaster'].split(',')))
+                    # Can come back and get rid of this if/else tree
+                    if 'ReadInt' in device_dict:
+                        if 'WriteInt' in device_dict:
+                            dma_class.append(
+                                StreamDMA(
+                                    name=device_dict['Name'],
+                                    pio=pio_size,
+                                    pio_masters=pio_masters,
+                                    address=top_address,
+                                    statusAddress=statusAddress,
+                                    dmaType=device_dict['Type'],
+                                    rd_int=device_dict['ReadInt'],
+                                    wr_int=device_dict['WriteInt'],
+                                    size=device_dict['BufferSize']
+                                )
+                            )
+                        else:
+                            dma_class.append(
+                                StreamDMA(
+                                    name=device_dict['Name'],
+                                    pio=pio_size,
+                                    pio_masters=pio_masters,
+                                    address=top_address,
+                                    statusAddress=statusAddress,
+                                    dmaType=device_dict['Type'],
+                                    rd_int=device_dict['ReadInt'],
+                                    wr_int=None,
+                                    size=device_dict['BufferSize']
+                                )
+                            )
+                    elif 'WriteInt' in device_dict:
+                        dma_class.append(
+                            StreamDMA(
+                                name=device_dict['Name'],
+                                pio=pio_size,
+                                pio_masters=pio_masters,
+                                address=top_address,
+                                statusAddress=statusAddress,
+                                dmaType=device_dict['Type'],
+                                rd_int=None,
+                                wr_int=device_dict['WriteInt'],
+                                size=device_dict['BufferSize']
+                            )
+                        )
+                    else:
+                        dma_class.append(
+                            StreamDMA(
+                                name=device_dict['Name'],
+                                pio=pio_size,
+                                pio_masters=pio_masters,
+                                address=top_address,
+                                statusAddress=statusAddress,
+                                dmaType=device_dict['Type'],
+                                rd_int=None,
+                                wr_int=None,
+                                size=device_dict['BufferSize']
+                            )
+                        )
+
+                    # Increment Top Address
+                    top_address = top_address + aligned_inc + alignedStatusInc
+        # Parse Accelerators
+        for acc in self.accs:
+            # Save top_address before processing accelerator config for copies
+            start_addr = self.top_address
+            copies = 1
+            pio_size_val = None
+
+            name = None
+            pio_masters = []
+            stream_in = []
+            stream_out = []
+            local_connections = []
+            # variables will now be set per accelerator copy later
+            pio_address = None
+            pio_size = None
+            int_num = None
+            ir_path = None
+            hw_config_path = self.hw_config_path
+            debug = False
+            type = None
+            operation = None
+
+            for device_dict in acc['Accelerator']:
+                if 'Name' in device_dict:
+                    name = device_dict['Name']
+                if 'Type' in device_dict:
+                    type = device_dict['Type']
+                    if type == "Mover":
+                        self.fusable_ops.add(device_dict['Source'], device_dict['Destination'])
+                if 'PIOSize' in device_dict:
+                    # Compute PIO size and save for copies
+                    pio_size = device_dict['PIOSize'] + (64 - (device_dict['PIOSize'] % 64))
+                    pio_size_val = pio_size
+                    # For non-copied accelerator, assign and update address
+                    self.top_address = self.top_address + pio_size
+                    if ((self.top_address + pio_size) % 64) != 0:
+                        print("Acc Error: " + hex(self.top_address - pio_size))
+                # ...existing code for other parameters...
+                if 'PIOMaster' in device_dict:
+                    pio_masters.extend((device_dict['PIOMaster'].split(',')))
+                if 'StreamIn' in device_dict:
+                    stream_in.extend((device_dict['StreamIn'].split(',')))
+                if 'StreamOut' in device_dict:
+                    stream_out.extend((device_dict['StreamOut'].split(',')))
+                if 'LocalSlaves' in device_dict:
+                    local_connections.extend((device_dict['LocalSlaves'].split(',')))
+                if 'InterruptNum' in device_dict:
+                    int_num = device_dict['InterruptNum']
+                if 'IrPath' in device_dict:
+                    ir_path = device_dict['IrPath']
+                if 'HWPath' in device_dict:
+                    hw_config_path = device_dict['HWPath']
+                if 'Debug' in device_dict:
+                    debug = device_dict['Debug']
+                if 'Operation' in device_dict:
+                    for op in device_dict['Operation']:
+                        operands = []
+                        results = []
+                        for operand in op['Operands']:
+                            if operand['InOut'] == 'In':
+                                operands.append(Operand(operand['Name'], 'In', operand['Dtype'], operand['VarName']))
+                            else:
+                                results.append(Operand(operand['Name'], 'Out', operand['Dtype'], operand['VarName']))
+                        operation = Operation(op['Name'], operands, results, op['Tile'])
+                if 'Copies' in device_dict:
+                    copies = device_dict['Copies']
+
+            # Revert top_address if accelerator is to be copied so Var allocation is per copy
+            if copies > 1:
+                self.top_address = start_addr
+
+            # Instantiate accelerator copies or a single instance with Var parsing
+            if copies > 1:
+                for i in range(copies):
+                    copy_vars = []
+                    # Process Var block for this accelerator copy if exists
+                    if 'Var' in acc:
+                        for var_group in acc['Var']:
+                            for var in var_group:
+                                varParams = dict(var)
+                                varParams['Address'] = self.top_address
+                                varParams['AccName'] = name
+                                if varParams['Type'] == "Stream":
+                                    aligned_inc = int(var['StreamSize'] + 4) + (64 - (int(var['StreamSize'] + 4) % 64))
+                                    varParams['StatusAddress'] = self.top_address + aligned_inc
+                                copy_vars.append(Variable(**varParams))
+                                if varParams['Type'] == "SPM":
+                                    aligned_inc = int(var['Size']) + (64 - (int(var['Size']) % 64))
+                                    self.top_address += aligned_inc
+                                elif varParams['Type'] == "Stream":
+                                    statusSize = 4
+                                    aligned_inc = int(var['StreamSize'] + 4) + (64 - (int(var['StreamSize'] + 4) % 64))
+                                    status_inc = int(statusSize) + (64 - (int(statusSize) % 64))
+                                    self.top_address += aligned_inc + status_inc
+                                elif varParams['Type'] == "RegisterBank":
+                                    aligned_inc = int(var['Size']) + (64 - (int(var['Size']) % 64))
+                                    self.top_address += aligned_inc
+
+                    copy_pio_address = None
+                    if pio_size_val is not None:
+                        copy_pio_address = self.top_address
+                        self.top_address += pio_size_val
+                    copy_name = f"{name}_{i}"
+                    acc_class.append(
+                        Accelerator(
+                            name=copy_name,
+                            pio_masters=pio_masters,
+                            local_connections=local_connections,
+                            address=copy_pio_address,
+                            size=pio_size,
+                            stream_in=stream_in,
+                            stream_out=stream_out,
+                            int_num=int_num,
+                            working_dir=working_dir,
+                            ir_path=ir_path,
+                            config_path=self.config_path,
+                            hw_config_path=hw_config_path,
+                            variables=copy_vars,
+                            debug=debug,
+                            type=type,
+                            operation=operation
+                        )
+                    )
+            else:
+                single_vars = []
+                if 'Var' in acc:
+                    for var_group in acc['Var']:
+                        for var in var_group:
+                            varParams = dict(var)
+                            varParams['Address'] = self.top_address
+                            varParams['AccName'] = name
+                            if varParams['Type'] == "Stream":
+                                aligned_inc = int(var['StreamSize'] + 4) + (64 - (int(var['StreamSize'] + 4) % 64))
+                                varParams['StatusAddress'] = self.top_address + aligned_inc
+                            single_vars.append(Variable(**varParams))
+                            if varParams['Type'] == "SPM":
+                                aligned_inc = int(var['Size']) + (64 - (int(var['Size']) % 64))
+                                self.top_address += aligned_inc
+                            elif varParams['Type'] == "Stream":
+                                statusSize = 4
+                                aligned_inc = int(var['StreamSize'] + 4) + (64 - (int(var['StreamSize'] + 4) % 64))
+                                status_inc = int(statusSize) + (64 - (int(statusSize) % 64))
+                                self.top_address += aligned_inc + status_inc
+                            elif varParams['Type'] == "RegisterBank":
+                                aligned_inc = int(var['Size']) + (64 - (int(var['Size']) % 64))
+                                self.top_address += aligned_inc
+                acc_class.append(
+                    Accelerator(
+                        name=name,
+                        pio_masters=pio_masters,
+                        local_connections=local_connections,
+                        address=pio_address,
+                        size=pio_size,
+                        stream_in=stream_in,
+                        stream_out=stream_out,
+                        int_num=int_num,
+                        working_dir=working_dir,
+                        ir_path=ir_path,
+                        config_path=self.config_path,
+                        hw_config_path=hw_config_path,
+                        variables=single_vars,
+                        debug=debug,
+                        type=type,
+                        operation=operation
+                    )
+                )
+        self.accs = acc_class
+        self.dmas = dma_class
+        self.top_address = top_address
+
+    def genConfig(self):
+        lines = []
+        # Need to add some customization here. Consider this a placeholder
+        # Also need to edit AccCluster.py's addresses to match the gem5 supported ones
+        lines.append("def build" + self.name +
+                     "(options, system, clstr):" + "\n")
+        lines.append("	local_low = " + hex(self.base_address))
+        lines.append("	local_high = " + hex(self.top_address))
+        lines.append("	local_range = AddrRange(local_low, local_high)")
+        lines.append(
+            "	external_range = [AddrRange(0x00000000, local_low-1), AddrRange(local_high+1, 0xFFFFFFFF)]")
+        lines.append(
+            "	system.iobus.mem_side_ports = clstr.local_bus.cpu_side_ports")
+        # Need to define l2coherency in the YAML file?
+        lines.append(
+            "	clstr._connect_caches(system, options, l2coherent=False)")
+        lines.append("	gic = system.realview.gic")
+        lines.append("")
+
+        return lines
+
+    def genDriver(self, output_file):
+        with open(output_file, 'w') as f:
+            # Write header includes and macros
+            f.write("#include <stdint.h>\n")
+            f.write(f'#include "../{self.name}_hw_defines.h"\n\n')
+
+            # Generate a call function for each accelerator
+            for acc in self.accs:
+                acc_name = acc.name  # Get accelerator name
+                # Generate function arguments
+                args = []
+                for operand in acc.operation.operands:
+                    opName = operand.name
+                    num_dims = self._get_dimensions(operand.dType)
+                    args.extend([
+                        f"float* {opName}_allocated", f"float* {opName}_aligned",
+                        f"int64_t {opName}_offset"
+                    ])
+                    for dim in range(num_dims):
+                        args.append(f"int64_t {opName}_size{dim}")
+                    for dim in range(num_dims):
+                        args.append(f"int64_t {opName}_stride{dim}")
+
+                for result in acc.operation.results:
+                    opName = result.varName
+                    num_dims = self._get_dimensions(result.dType)
+                    args.extend([
+                        f"float* {opName}_allocated", f"float* {opName}_aligned",
+                        f"int64_t {opName}_offset"
+                    ])
+                    for dim in range(num_dims):
+                        args.append(f"int64_t {opName}_size{dim}")
+                    for dim in range(num_dims):
+                        args.append(f"int64_t {opName}_stride{dim}")
+
+                # Write function signature
+                f.write(f"void {acc_name}Call({', '.join(args)}) {{\n")
+                # Transfer operands (inputs) to SPM
+                for operand in acc.operation.operands:
+                    opName = operand.name
+                    varName = operand.varName
+                    f.write(f"    // Transfer operand {opName} to SPM\n")
+                    f.write(f"    dma_transfer_tensor_to_spm(DMA_Flags, {varName}, 0, {varName}_shape, {varName}_stride, {varName}_len, (uint64_t){varName}_ptr);\n\n")
+
+                # Call the accelerator
+                f.write("    // Call the accelerator\n")
+                f.write(f"    accelerator_call({acc_name.upper()});\n\n")
+
+                # Transfer results (outputs) to memory
+                for result in acc.operation.results:
+                    opName = result.name
+                    varName = result.varName
+                    f.write(f"    // Transfer result {opName} to memory\n")
+                    f.write(f"    dma_transfer_tensor_to_mem(DMA_FLAGS, MEM_ADDR, 0, {varName}_shape, {varName}_stride, {varName}_len, (uint64_t){varName}_ptr);\n\n")
+
+                f.write("}\n\n")
+
+            # End of file
+            f.write("// End of generated driver code\n")
+class Accelerator:
+
+    def __init__(
+        self,
+        name: str,
+        pio_masters: str,
+        local_connections: str,
+        address: int,
+        size: int,
+        stream_in: str,
+        stream_out: str,
+        int_num: int,
+        working_dir: str,
+        ir_path: str,
+        config_path: str,
+        hw_config_path: str,
+        variables=None,
+        debug: bool = False,
+        type: str = None,
+        operation = None
+    ):
+
+        self.name = name.lower()
+        self.pio_masters = pio_masters
+        self.local_connections = local_connections
+        self.address = address
+        self.size = size
+        self.stream_in = stream_in
+        self.stream_out = stream_out
+        self.int_num = int_num
+
+        self.working_dir = working_dir
+        self.ir_path = ir_path
+        self.config_path = config_path
+        self.hw_config_path = hw_config_path
+        self.variables = variables
+        self.debug = debug
+        self.type = type
+        self.operation = operation
+
+    def genDefinition(self):
+        lines = []
+        lines.append("# " + self.name + " Definition")
+        lines.append("acc = " + "\"" + self.name + "\"")
+        lines.append("ir = " + "\"" + self.working_dir +
+                     "/" + self.ir_path + "\"")
+        lines.append("hw_config = ""\"" + self.hw_config_path + "\"")
+
+        # Add interrupt number if it exists
+        if self.int_num is not None:
+            lines.append("clstr." + self.name + " = CommInterface(devicename=acc, gic=gic, pio_addr="
+                         + str(hex(self.address)) + ", pio_size=" + str(self.size) + ", int_num=" + str(self.int_num) + ")")
+        else:
+            lines.append("clstr." + self.name + " = CommInterface(devicename=acc, gic=gic, pio_addr="
+                         + str(hex(self.address)) + ", pio_size=" + str(self.size) + ")")
+
+        lines.append("AccConfig(clstr." + self.name + ", ir, hw_config)")
+        lines.append("")
+
+        return lines
+
+    def genConfig(self):
+        lines = []
+
+        lines.append("# " + self.name + " Config")
+
+        for connection in self.local_connections:
+            if "LocalBus" in connection:
+                lines.append("clstr." + self.name +
+                             ".local = clstr.local_bus.cpu_side_ports")
+            else:
+                lines.append("clstr." + self.name +
+                             ".local = clstr." + connection.lower() + ".pio")
+
+        # Assign PIO Masters
+        for master in self.pio_masters:
+            if "LocalBus" in master:
+                lines.append("clstr." + self.name +
+                             ".pio = clstr.local_bus.mem_side_ports")
+            else:
+                assert False, "Shouldn't be here?"
+                # lines.append("clstr." + self.name + ".pio " +
+                #              "=" " clstr." + i + ".local")
+        # Add StreamIn
+        for inCon in self.stream_in:
+            lines.append("clstr." + self.name +
+                         ".stream = clstr." + inCon.lower() + ".stream_in")
+        # Add StreamOut
+        for outCon in self.stream_out:
+            lines.append("clstr." + self.name +
+                         ".stream = clstr." + outCon.lower() + ".stream_out")
+
+        lines.append("clstr." + self.name +
+                     ".enable_debug_msgs = " + str(self.debug))
+        lines.append("")
+
+        # Add scratchpad variables
+        for var in self.variables:
+            # Have the variable create its config
+            lines = var.genConfig(lines)
+            lines.append("")
+        # Return finished config portion
+        return lines
+
+
+class StreamDMA:
+    def __init__(
+        self,
+        name: str,
+        pio: int,
+        pio_masters: str,
+        address: int,
+        statusAddress: int,
+        dmaType: str,
+        rd_int: int = None,
+        wr_int: int = None,
+        size: int = 64
+    ):
+        self.name = name.lower()
+        self.pio = pio
+        self.pio_masters = pio_masters
+        self.size = size
+        self.address = address
+        self.statusAddress = statusAddress
+        self.dmaType = dmaType
+        self.rd_int = rd_int
+        self.wr_int = wr_int
+
+        for master in self.pio_masters:
+            count = 0
+            if "localbus" in master.lower():
+                pio_masters[count] = "local_bus"
+                count += 1
+    # Probably could apply the style used here in other genConfigs
+
+    def genConfig(self):
+        lines = []
+        dmaPath = "clstr." + self.name + "."
+        # Need to fix max_pending?
+        lines.append("# Stream DMA")
+        lines.append("clstr." + self.name + " = StreamDma(pio_addr=" + hex(self.address) +
+                     ", status_addr=" + hex(self.statusAddress) + ", pio_size = " + str(self.pio) + ", gic=gic, max_pending = " + str(self.pio) + ")")
+        lines.append(dmaPath + "stream_addr = " +
+                     hex(self.address) + " + " + str(self.pio))
+        lines.append(dmaPath + "stream_size = " + str(self.size))
+        lines.append(dmaPath + "pio_delay = '1ns'")
+        if self.rd_int != None:
+            lines.append(dmaPath + "rd_int = " + str(self.rd_int))
+        if self.wr_int != None:
+            lines.append(dmaPath + "wr_int = " + str(self.wr_int))
+        lines.append("clstr." + self.name +
+                     ".dma = clstr.coherency_bus.cpu_side_ports")
+        if self.pio_masters is not None:
+            for master in self.pio_masters:
+                lines.append("clstr." + master.lower() +
+                             ".mem_side_ports = clstr." + self.name + ".pio")
+        lines.append("")
+
+        return lines
+
+
+class DMA:
+    def __init__(
+        self,
+        name: str,
+        pio: int,
+        pio_masters: str,
+        address: int,
+        dmaType: str,
+        int_num=None,
+        size: int = 64,
+        maxReq: int = 4
+    ):
+        self.name = name.lower()
+        self.pio = pio
+        self.pio_masters = pio_masters
+        self.size = size
+        self.address = address
+        self.dmaType = dmaType
+        self.int_num = int_num
+        self.maxReq = maxReq
+
+        for master in self.pio_masters:
+            count = 0
+            if "localbus" in master.lower():
+                pio_masters[count] = "local_bus"
+                count += 1
+    # Probably could apply the style used here in other genConfigs
+
+    def genConfig(self):
+        lines = []
+        dmaPath = "clstr." + self.name + "."
+        systemPath = "clstr."
+        lines.append("# Noncoherent DMA")
+        lines.append("clstr." + self.name + " = NoncoherentDma(pio_addr="
+                     + hex(self.address) + ", pio_size = " + str(self.pio)
+                     + ", gic=gic, int_num=" + str(self.int_num) + ")")
+        lines.append(dmaPath + "cluster_dma = " +
+                     systemPath + "local_bus.cpu_side_ports")
+        lines.append(dmaPath + "max_req_size = " + str(self.maxReq))
+        lines.append(dmaPath + "buffer_size = " + str(self.size))
+        lines.append("clstr." + self.name +
+                     ".dma = clstr.coherency_bus.cpu_side_ports")
+        if self.pio_masters is not None:
+            for master in self.pio_masters:
+                lines.append("clstr." + master.lower() +
+                             ".mem_side_ports = clstr." + self.name + ".pio")
+        lines.append("")
+
+        return lines
+
+
+class PortedConnection:
+    def __init__(self, conName: str, numPorts: int):
+        self.conName = conName
+        self.numPorts = numPorts
+
+
+class Variable:
+    def __init__(self, **kwargs):
+        # Read the type first
+        self.type = kwargs.get('Type')
+        if self.type == 'SPM':
+            self.connections = []
+            # Read in SPM args
+            self.name = kwargs.get('Name')
+            self.accName = kwargs.get('AccName')
+            self.size = kwargs.get('Size')
+            self.ports = kwargs.get('Ports', 1)
+            self.address = kwargs.get('Address')
+            self.readyMode = kwargs.get('ReadyMode', False)
+            self.resetOnRead = kwargs.get('ResetOnRead', True)
+            self.readOnInvalid = kwargs.get('ReadOnInvalid', False)
+            self.writeOnValid = kwargs.get('WriteOnValid', True)
+            # Append the default connection here... probably need to be more elegant
+            self.connections.append(PortedConnection(self.accName, self.ports))
+            # Append other connections to the connections list
+            if 'Connections' in kwargs:
+                for conDef in kwargs.get('Connections').split(','):
+                    con, numPorts = conDef.split(':')
+                    self.connections.append(PortedConnection(con, numPorts))
+        elif self.type == 'Stream':
+            # Read in Stream args
+            self.name = kwargs.get('Name')
+            self.accName = kwargs.get('AccName')
+            self.inCon = kwargs.get('InCon')
+            self.outCon = kwargs.get('OutCon')
+            self.streamSize = kwargs.get('StreamSize')
+            self.bufferSize = kwargs.get('BufferSize')
+            self.address = kwargs.get('Address')
+            self.statusAddress = kwargs.get('StatusAddress')
+            # Convert connection definitions to lowercase
+            self.inCon = self.inCon.lower()
+            self.outCon = self.outCon.lower()
+        elif self.type == 'RegisterBank':
+            self.connections = []
+            # Read in SPM args
+            self.name = kwargs.get('Name')
+            self.accName = kwargs.get('AccName')
+            self.size = kwargs.get('Size')
+            self.address = kwargs.get('Address')
+            # Append the default connection here... probably need to be more elegant
+            self.connections.append(PortedConnection(self.accName, 1))
+            # Append other connections to the connections list
+            if 'Connections' in kwargs:
+                for conDef in kwargs.get('Connections').split(','):
+                    con, numPorts = conDef.split(':')
+                    self.connections.append(PortedConnection(con, numPorts))
+        elif self.type == 'Cache':
+            self.name = kwargs.get('Name')
+            self.accName = kwargs.get('AccName')
+            self.size = kwargs.get('Size')
+        else:
+            # Throw an exception if we don't know the type
+            exceptionString = ("The variable: " + kwargs.get('Name')
+                               + " has an invalid type named: " + self.type)
+            raise Exception(exceptionString)
+
+    def genConfig(self, lines):
+        # Add new variable configs here
+        # Stream Buffer Variable
+        if self.type == 'Stream':
+            lines.append("# " + self.name + " (Stream Variable)")
+            lines.append("addr = " + hex(self.address))
+            lines.append("clstr." + self.name.lower() + " = StreamBuffer(stream_address = addr, status_address= " + hex(self.statusAddress)
+                         + ", stream_size = " + str(self.streamSize) + ", buffer_size = " + str(self.bufferSize) + ")")
+            lines.append("clstr." + self.inCon + ".stream = " +
+                         "clstr." + self.name.lower() + ".stream_in")
+            lines.append("clstr." + self.outCon + ".stream = " +
+                         "clstr." + self.name.lower() + ".stream_out")
+            lines.append("")
+        # Scratchpad Memory
+        elif self.type == 'SPM':
+            lines.append("# " + self.name + " (Variable)")
+            lines.append("addr = " + hex(self.address))
+            lines.append(
+                "spmRange = AddrRange(addr, addr + " + hex(self.size) + ")")
+            # When appending convert all connections to lowercase for standardization
+            lines.append("clstr." + self.name.lower() +
+                         " = ScratchpadMemory(range = spmRange)")
+            # Probably need to add table and read mode to the YAML File
+            lines.append("clstr." + self.name.lower() +
+                         "." + "conf_table_reported = False")
+            lines.append("clstr." + self.name.lower() + "." +
+                         "ready_mode = " + str(self.readyMode))
+            lines.append("clstr." + self.name.lower() + "." +
+                         "reset_on_scratchpad_read = " + str(self.resetOnRead))
+            lines.append("clstr." + self.name.lower() + "." +
+                         "read_on_invalid = " + str(self.readOnInvalid))
+            lines.append("clstr." + self.name.lower() + "." +
+                         "write_on_valid = " + str(self.writeOnValid))
+            lines.append("clstr." + self.name.lower() + "." +
+                         "port" + " = " + "clstr.local_bus.mem_side_ports")
+            for con in self.connections:
+                lines.append("")
+                lines.append("# Connecting " + self.name +
+                             " to " + con.conName)
+                lines.append("for i in range(" + str(con.numPorts) + "):")
+                lines.append("	clstr." + con.conName.lower() + ".spm = " +
+                             "clstr." + self.name.lower() + ".spm_ports")
+        # RegisterBank
+        elif self.type == 'RegisterBank':
+            lines.append("# " + self.name + " (Variable)")
+            lines.append("addr = " + hex(self.address))
+            lines.append(
+                "regRange = AddrRange(addr, addr + " + hex(self.size) + ")")
+            # When appending convert all connections to lowercase for standardization
+            lines.append("clstr." + self.name.lower() +
+                         " = RegisterBank(range = regRange)")
+            lines.append("clstr." + self.name.lower() + "." +
+                         "load_port" + " = " + "clstr.local_bus.mem_side_ports")
+            for con in self.connections:
+                lines.append("")
+                lines.append("# Connecting " + self.name +
+                             " to " + con.conName)
+                lines.append("clstr." + con.conName.lower() + ".reg = " +
+                             "clstr." + self.name.lower() + ".reg_port")
+        # L1 Cache, need to add L2 still...
+        elif self.type == 'Cache':
+            lines.append("# " + self.name + " (Cache)")
+            lines.append("clstr." + self.name +
+                         " = L1Cache(size = '" + str(self.size) + "B')")
+            lines.append("clstr." + self.name +
+                         ".mem_side = clstr.coherency_bus.cpu_side_ports")
+            lines.append("clstr." + self.name +
+                         ".cpu_side = clstr." + self.accName + ".local")
+        else:
+            # Should never get here... but just in case throw an exception
+            exceptionString = ("The variable: " + self.name
+                               + " has an invalid type named: " + self.type)
+            raise Exception(exceptionString)
+        return lines
+
+class Operand:
+    def __init__(self, name: str, inout: str, dtype: str, varname: str = None):
+        self.name = name
+        self.inOut = inout
+        self.dType = dtype
+        self.varName = varname
+
+class Operation:
+    def __init__(self, name: str, operands: list, results: list, tile: str):
+        self.name = name
+        self.operands = operands
+        self.results = results
+        self.tile = tile  # Tile sizes as a comma-separated string (e.g., "4,4,4")
+
+    def apply_transform(self, input_file: str, transform_program: str = "call_transform_program.py"):
+        """
+        Calls the `tile_call.py` script to apply tiling to the operation.
+
+        Args:
+            input_file (str): Path to the input MLIR file.
+            transform_program (str): Path to the `tile_call.py` script.
+        """
+        # Prepare the command to call the transform program
+        command = [
+            "python3",
+            transform_program,
+            input_file,
+            f"--match-op={self.name}",
+            f"--tile-sizes={self.tile}",
+        ]
+
+        # Print the command for debugging
+        print("Running command:", " ".join(command))
+
+        # Call the transform program
+        try:
+            result = subprocess.run(command, check=True, text=True, capture_output=True)
+            print("Transform program output:")
+            print(result.stdout)
+        except subprocess.CalledProcessError as e:
+            print("Error running transform program:", e.stderr, file=sys.stderr)
+            sys.exit(1)
+
+class FusableOps:
+    def __init__(self):
+        # Initialize an empty list to store fusable operation pairs
+        self.fusable_pairs = []
+
+    def add(self, op1: str, op2: str):
+        """
+        Add a pair of fusable operations to the list.
+        Args:
+            op1 (str): The first operation in the pair.
+            op2 (str): The second operation in the pair.
+        """
+        self.fusable_pairs.append((op1, op2))
+
+    def generate_full_list(self):
+        """
+        Generate all possible fusable operation chains based on the recorded pairs.
+        Returns:
+            list: A list of lists, where each inner list represents a fusable operation chain.
+        """
+        # Create a graph to represent fusable operations
+        graph = {}
+        for op1, op2 in self.fusable_pairs:
+            if op1 not in graph:
+                graph[op1] = []
+            if op2 not in graph:
+                graph[op2] = []
+            graph[op1].append(op2)
+            graph[op2].append(op1)
+
+        # Helper function to perform DFS and generate chains
+        def dfs(node, visited, path, all_chains):
+            visited.add(node)
+            path.append(node)
+            all_chains.append(path.copy())
+            for neighbor in graph.get(node, []):
+                if neighbor not in visited:
+                    dfs(neighbor, visited, path, all_chains)
+            path.pop()
+            visited.remove(node)
+
+        # Generate all possible chains
+        all_chains = []
+        for node in graph:
+            dfs(node, set(), [], all_chains)
+
+        # Remove duplicate chains (e.g., [A, B] and [B, A] are considered the same)
+        unique_chains = []
+        for chain in all_chains:
+            sorted_chain = tuple(sorted(chain))
+            if sorted_chain not in unique_chains:
+                unique_chains.append(sorted_chain)
+
+        # Convert tuples back to lists
+        return [list(chain) for chain in unique_chains]

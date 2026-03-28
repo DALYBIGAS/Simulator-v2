@@ -1,0 +1,22 @@
+compile:
+  model_name: qwen2-prefill-demo
+  kernel_name: qkv_prefill_stage3
+  mode: prefill
+  match_op: linalg.batch_matmul
+  dtype: bf16
+  batch_size: 1
+  seq_len: 1024
+  num_heads: 16
+  head_dim: 128
+  hidden_size: 2048
+  kv_cache: false
+  op_chain: [linalg.batch_matmul, linalg.generic, linalg.generic]
+  outline_function: qkv_prefill_kernel
+  tags: [attention, projection]
+  notes:
+    - prefill path for long context attention projection
+  inputs:
+    - {name: query, dtype: bf16, shape: [1, 1024, 2048], layout: row-major, role: activation}
+    - {name: weight_qkv, dtype: bf16, shape: [2048, 6144], layout: row-major, role: weight}
+  outputs:
+    - {name: qkv_out, dtype: bf16, shape: [1, 1024, 6144], layout: row-major, role: activation}

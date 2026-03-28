@@ -1,0 +1,3 @@
+add_subdirectory(config_parser)
+add_subdirectory(driver_gen)
+add_subdirectory(transform_gen)

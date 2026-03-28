@@ -1,0 +1,9 @@
+{
+  "sim_ticks": 2000000.0,
+  "cycles": 600000.0,
+  "insts": 1200000.0,
+  "dram_bytes_read": 8388608.0,
+  "dram_bytes_write": 2097152.0,
+  "token_latency_us": 500.0,
+  "achieved_bandwidth_gbps": 167.77216
+}

@@ -1,0 +1,21 @@
+compile:
+  model_name: opt-6.7b
+  architecture: opt
+  kernel_name: opt_prefill
+  mode: prefill
+  match_op: linalg.batch_matmul
+  dtype: fp16
+  batch_size: 1
+  seq_len: 1024
+  num_heads: 32
+  head_dim: 128
+  hidden_size: 4096
+  kv_cache: false
+  op_chain: [linalg.batch_matmul, linalg.generic]
+  outline_function: opt_prefill_kernel
+  tags: [attention, gelu, layernorm]
+  inputs:
+    - {name: hidden_states, dtype: fp16, shape: [1, 1024, 4096], layout: row-major, role: activation}
+    - {name: w_qkv, dtype: fp16, shape: [4096, 12288], layout: row-major, role: weight}
+  outputs:
+    - {name: qkv_out, dtype: fp16, shape: [1, 1024, 12288], layout: row-major, role: activation}

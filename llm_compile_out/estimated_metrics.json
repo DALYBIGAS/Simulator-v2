@@ -1,0 +1,9 @@
+{
+  "model_family": "llama",
+  "estimated_flops": 206158430208.0,
+  "estimated_bytes": 50331648.0,
+  "estimated_latency_ms": 6144000.0,
+  "estimated_tokens_per_sec": 0.3333333333333333,
+  "estimated_bandwidth_gbps": 768.0,
+  "estimated_compute_utilization": 1.0
+}

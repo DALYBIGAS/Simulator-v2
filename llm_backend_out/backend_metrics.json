@@ -1,0 +1,7 @@
+{
+  "num_pipeline_passes": 13,
+  "num_runtime_buffers": 3,
+  "num_runtime_launches": 1,
+  "used_real_mlir_opt": false,
+  "source_manifest": "llm_compile_out/compile_manifest.json"
+}

@@ -1,0 +1,5 @@
+simTicks                                   2000000
+simInsts                                   1200000
+system.cpu.numCycles                       600000
+system.mem_ctrl.bytesRead                  8388608
+system.mem_ctrl.bytesWritten               2097152

@@ -1,0 +1,23 @@
+compile:
+  model_name: qwen2-decode-demo
+  kernel_name: decode_attention_stage3
+  mode: decode
+  match_op: linalg.matmul
+  dtype: bf16
+  batch_size: 1
+  seq_len: 1
+  num_heads: 16
+  head_dim: 128
+  hidden_size: 2048
+  kv_cache: true
+  op_chain: [linalg.matmul, linalg.softmax, linalg.matmul]
+  outline_function: decode_attention_kernel
+  tags: [attention, decode]
+  notes:
+    - decode path for token-by-token attention with kv cache
+  inputs:
+    - {name: query, dtype: bf16, shape: [1, 1, 2048], layout: row-major, role: activation}
+    - {name: key_cache, dtype: bf16, shape: [16, 2048, 128], layout: row-major, role: kv-cache}
+    - {name: value_cache, dtype: bf16, shape: [16, 2048, 128], layout: row-major, role: kv-cache}
+  outputs:
+    - {name: attn_out, dtype: bf16, shape: [1, 1, 2048], layout: row-major, role: activation}

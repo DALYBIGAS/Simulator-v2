@@ -1,0 +1,99 @@
+{
+  "kernels": [
+    {
+      "name": "qkv-projection",
+      "op_type": "linalg.batch_matmul",
+      "modes": [
+        "prefill",
+        "train-fwd"
+      ],
+      "supported_dtypes": [
+        "bf16",
+        "fp16",
+        "f32"
+      ],
+      "tags": [
+        "attention",
+        "projection"
+      ],
+      "preferred_tile_sizes": [
+        128,
+        128,
+        64
+      ],
+      "uses_kv_cache": false,
+      "notes": "Dense QKV projection path optimized for long-sequence prefill."
+    },
+    {
+      "name": "decode-attention",
+      "op_type": "linalg.matmul",
+      "modes": [
+        "decode"
+      ],
+      "supported_dtypes": [
+        "bf16",
+        "fp16",
+        "int8"
+      ],
+      "tags": [
+        "attention",
+        "decode"
+      ],
+      "preferred_tile_sizes": [
+        64,
+        128,
+        32
+      ],
+      "uses_kv_cache": true,
+      "notes": "Decode path tuned for short query and long KV cache access."
+    },
+    {
+      "name": "rmsnorm-epilogue",
+      "op_type": "linalg.generic",
+      "modes": [
+        "prefill",
+        "decode",
+        "train-fwd"
+      ],
+      "supported_dtypes": [
+        "bf16",
+        "fp16",
+        "f32"
+      ],
+      "tags": [
+        "norm",
+        "epilogue"
+      ],
+      "preferred_tile_sizes": [
+        1,
+        256,
+        1
+      ],
+      "uses_kv_cache": false,
+      "notes": "Fusable epilogue path for RMSNorm and residual add."
+    },
+    {
+      "name": "matmul-backward",
+      "op_type": "linalg.generic",
+      "modes": [
+        "train-bwd"
+      ],
+      "supported_dtypes": [
+        "bf16",
+        "fp16",
+        "f32"
+      ],
+      "tags": [
+        "backward",
+        "matmul"
+      ],
+      "preferred_tile_sizes": [
+        128,
+        64,
+        128
+      ],
+      "uses_kv_cache": false,
+      "notes": "Gradient-oriented matmul path."
+    }
+  ]
+}

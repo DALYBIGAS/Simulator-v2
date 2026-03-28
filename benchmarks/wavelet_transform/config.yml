@@ -1,0 +1,93 @@
+---
+acc_cluster:
+  - Name: wavelet_clstr  # 加速器集群名称
+
+  # DMA 配置，用于处理数据传输
+  - DMA:
+    - Name: dma  # DMA 名称
+      MaxReqSize: 64  # 最大请求大小（字节）
+      BufferSize: 128  # DMA 缓冲区大小（字节）
+      PIOMaster: LocalBus  # PIO 主设备（本地总线）
+      Type: NonCoherent  # DMA 类型（非一致性）
+      InterruptNum: 95  # 中断号
+      
+# Wavelet 加速器配置
+  - Accelerator:
+    - Name: wavelet_accelerator  # 小波变换加速器名称
+      IrPath: hw/wavelet_accelerator.ll  # 小波变换加速器的 IR 文件路径
+      PIOSize: 256  # PIO 寄存器大小（字节）
+      InterruptNum: 68  # 中断号
+      PIOMaster: LocalBus  # 本地总线连接
+      LocalSlaves: LocalBus  # 本地从设备
+      Debug: False  # 禁用调试模式
+      
+  # 存储器配置，用于存储输入信号和小波变换后的输出
+  - Var:
+      - Name: WAVELET_INPUT  # 输入信号存储器
+        Type: SPM  # 使用共享片上存储器
+        Size: 65536  # 存储器大小（适应小波变换需要的信号数据量）
+        Ports: 2  # 数据传输端口数
+
+  - Var:
+      - Name: WAVELET_OUTPUT  # 输出信号存储器
+        Type: SPM  # 使用共享片上存储器
+        Size: 65536  # 存储器大小
+        Ports: 2  # 数据传输端口数
+
+  - Var:
+      - Name: TEMP_BUFFER  # 临时数据缓冲区，用于存储中间结果
+        Type: SPM
+        Size: 32768  # 存储一些中间结果
+        Ports: 2  # 数据传输端口数
+        
+  hw_config:
+  name: wavelet_clstr
+  wavelet_accelerator:
+    instructions:
+      # 基本加法指令，用于信号加和
+      add:
+        functional_unit: 1
+        functional_unit_limit: 0
+        opcode_num: 13
+        runtime_cycles: 1  # 计算一个加法指令所需的周期
+
+      # 基本乘法指令，用于卷积中的滤波操作
+      mul:
+        functional_unit: 2
+        functional_unit_limit: 0
+        opcode_num: 17
+        runtime_cycles: 2  # 计算一个乘法指令所需的周期
+
+      # 移位指令，用于处理信号的时域和频域之间的转换
+      shift:
+        functional_unit: 3
+        functional_unit_limit: 0
+        opcode_num: 24
+        runtime_cycles: 1  # 计算一个移位指令所需的周期
+
+      # 卷积指令，用于实现小波变换的滤波操作
+      convolve:
+        functional_unit: 4
+        functional_unit_limit: 0
+        opcode_num: 50
+        runtime_cycles: 10  # 计算一个卷积操作所需的周期
+
+      # 其他可能的小波变换所需的操作指令
+      scale:
+        functional_unit: 2
+        functional_unit_limit: 0
+        opcode_num: 51
+        runtime_cycles: 4  # 缩放操作，通常用于调整信号的幅度
+
+      # 可能还需要进行信号的分解、重建等操作的指令
+      decompose:
+        functional_unit: 3
+        functional_unit_limit: 0
+        opcode_num: 52
+        runtime_cycles: 15  # 分解操作的计算周期
+
+      reconstruct:
+        functional_unit: 4
+        functional_unit_limit: 0
+        opcode_num: 53
+        runtime_cycles: 20  # 重建操作的计算周期

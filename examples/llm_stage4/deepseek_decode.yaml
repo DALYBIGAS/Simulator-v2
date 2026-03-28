@@ -1,0 +1,24 @@
+compile:
+  model_name: deepseek-v3
+  architecture: deepseek
+  kernel_name: deepseek_decode
+  mode: decode
+  match_op: linalg.matmul
+  dtype: bf16
+  batch_size: 1
+  seq_len: 1
+  num_heads: 32
+  head_dim: 128
+  hidden_size: 4096
+  kv_cache: true
+  num_experts: 16
+  top_k_experts: 2
+  op_chain: [linalg.matmul, linalg.softmax, linalg.matmul]
+  outline_function: deepseek_decode_kernel
+  tags: [attention, decode, moe]
+  inputs:
+    - {name: query, dtype: bf16, shape: [1, 1, 4096], layout: row-major, role: activation}
+    - {name: key_cache, dtype: bf16, shape: [32, 4096, 128], layout: row-major, role: kv-cache}
+    - {name: value_cache, dtype: bf16, shape: [32, 4096, 128], layout: row-major, role: kv-cache}
+  outputs:
+    - {name: out, dtype: bf16, shape: [1, 1, 4096], layout: row-major, role: activation}

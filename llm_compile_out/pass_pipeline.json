@@ -1,0 +1,25 @@
+{
+  "graph": [
+    "canonicalize",
+    "cse"
+  ],
+  "kernel": [
+    "llm-fuse-attention-chain",
+    "llm-tile[128,128,64]",
+    "llm-fuse-epilogue",
+    "llm-select-kernel[qkv-projection]"
+  ],
+  "buffer": [
+    "llm-promote-sram",
+    "llm-insert-async-dma"
+  ],
+  "runtime": [
+    "llm-emit-events",
+    "llm-emit-launch-plan"
+  ],
+  "backend": [
+    "lower-affine",
+    "convert-scf-to-cf",
+    "finalize-memref-to-llvm"
+  ]
+}
