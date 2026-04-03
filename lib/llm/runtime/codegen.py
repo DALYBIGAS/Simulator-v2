@@ -25,6 +25,7 @@ def generate_runtime_launch_code(plan: Any, entry_name: str = "run_compiled_kern
     normalized = _normalize_plan(plan)
     buffers = normalized.get("buffers", [])
     launches = normalized.get("launches", [])
+    metadata = normalized.get("metadata", {})
     lines: List[str] = [
         "#include <stdint.h>",
         "#include <stddef.h>",
@@ -52,11 +53,13 @@ def generate_runtime_launch_code(plan: Any, entry_name: str = "run_compiled_kern
         "",
         f"void {entry_name}(uint64_t accelerator_base) {{",
         "  // Auto-generated runtime launch plan.",
+        f"  // mode={metadata.get('mode', 'unknown')} kv_cache={int(bool(metadata.get('kv_cache', False)))} is_moe={int(bool(metadata.get('is_moe', False)))}",
     ]
     for index, item in enumerate(buffers):
         lines.append(_emit_buffer_comment(index, item))
     lines.append("")
     for i, launch in enumerate(launches):
+        lines.append(f"  // launch[{i}] kind={launch.get('kind', 'compute')}")
         for event in launch.get("waits_on", []):
             lines.append(f'  ai_wait_event("{event}");')
         lines.append("  {")

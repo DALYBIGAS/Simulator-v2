@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import yaml
 
-from lib.llm.models.catalog import get_model_profile
+from lib.llm.models.catalog import get_model_profile, resolve_model_profile
 
 from .compiler_options import CompilerOptions, get_compiler_options
 from .hw_caps import HardwareCaps
@@ -57,27 +57,29 @@ def load_compile_spec(path: str | Path) -> CompileSpec:
     if not isinstance(spec, dict):
         raise SpecError("compile section must be a mapping")
 
-    model_family = spec.get("model_family")
-    profile = get_model_profile(str(model_family)) if model_family else None
-    dtype = str(spec.get("dtype", profile.default_dtype if profile else "bf16"))
-    match_op = str(spec.get("match_op", profile.preferred_match_op if profile else "linalg.matmul"))
+    architecture = str(spec.get("architecture", ""))
+    model_family = str(spec.get("model_family", architecture or spec.get("model_name", "")))
+    profile = get_model_profile(model_family) or resolve_model_profile(str(spec.get("model_name", "")), architecture)
+
+    dtype = str(spec.get("dtype", profile.default_dtype))
+    match_op = str(spec.get("match_op", profile.preferred_match_op))
+    attention_type = str(spec.get("attention_type", profile.attention_type))
+    kv_layout = str(spec.get("kv_layout", profile.kv_layout))
+    grouped_query_attention = bool(spec.get("grouped_query_attention", profile.grouped_query_attention))
+    mixture_of_experts = bool(spec.get("mixture_of_experts", profile.mixture_of_experts or int(spec.get("num_experts", 0)) > 0))
 
     raw_tags = [str(v) for v in spec.get("tags", [])]
-    inferred_tags = []
-    if spec.get("grouped_query_attention", profile.grouped_query_attention if profile else False):
+    inferred_tags: List[str] = []
+    if grouped_query_attention:
         inferred_tags.append("gqa")
-    attention_type = str(spec.get("attention_type", profile.attention_type if profile else "mha"))
     if attention_type and attention_type != "mha":
         inferred_tags.append(attention_type)
-    if spec.get("mixture_of_experts", profile.mixture_of_experts if profile else False):
+    if mixture_of_experts:
         inferred_tags.append("moe")
-    if profile:
-        raw_tags = list(dict.fromkeys(raw_tags + inferred_tags + profile.extra_tags + [profile.family, spec.get("mode", "prefill")]))
-    else:
-        raw_tags = list(dict.fromkeys(raw_tags + inferred_tags))
+    raw_tags = list(dict.fromkeys(raw_tags + inferred_tags + profile.extra_tags + [profile.family, str(spec.get("mode", "prefill"))]))
 
     notes = [str(v) for v in spec.get("notes", [])]
-    if profile and profile.notes not in notes:
+    if profile.notes and profile.notes not in notes:
         notes.append(profile.notes)
 
     return CompileSpec(
@@ -86,13 +88,16 @@ def load_compile_spec(path: str | Path) -> CompileSpec:
         mode=str(spec.get("mode", "prefill")),
         match_op=match_op,
         dtype=dtype,
-        model_family=str(model_family) if model_family else (profile.family if profile else None),
+        architecture=architecture or None,
+        model_family=profile.family,
         attention_type=attention_type,
-        kv_layout=str(spec.get("kv_layout", profile.kv_layout if profile else "paged")),
-        grouped_query_attention=bool(spec.get("grouped_query_attention", profile.grouped_query_attention if profile else False)),
-        mixture_of_experts=bool(spec.get("mixture_of_experts", profile.mixture_of_experts if profile else False)),
+        kv_layout=kv_layout,
+        grouped_query_attention=grouped_query_attention,
+        mixture_of_experts=mixture_of_experts,
         num_experts=int(spec.get("num_experts", 0)),
-        experts_per_token=int(spec.get("experts_per_token", 0)),
+        experts_per_token=int(spec.get("experts_per_token", spec.get("top_k_experts", 0))),
+        top_k_experts=int(spec.get("top_k_experts", spec.get("experts_per_token", 0))),
+        quantization=spec.get("quantization"),
         inputs=_load_tensors(spec.get("inputs", [])),
         outputs=_load_tensors(spec.get("outputs", [])),
         op_chain=[str(v) for v in spec.get("op_chain", [])],
@@ -103,6 +108,7 @@ def load_compile_spec(path: str | Path) -> CompileSpec:
         num_kv_heads=int(spec.get("num_kv_heads", spec.get("num_heads", 0))),
         head_dim=int(spec.get("head_dim", 0)),
         hidden_size=int(spec.get("hidden_size", 0)),
+        intermediate_size=int(spec.get("intermediate_size", 0)),
         kv_cache=bool(spec.get("kv_cache", False)),
         notes=notes,
         tags=raw_tags,
@@ -114,4 +120,3 @@ def load_compilation_context(hardware_path: str | Path, compile_path: str | Path
     compile_spec = load_compile_spec(compile_path)
     compiler_options = get_compiler_options(compile_spec.mode)
     return hw_caps, compiler_options, compile_spec
-

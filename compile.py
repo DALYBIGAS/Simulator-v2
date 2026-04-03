@@ -11,7 +11,7 @@ from typing import Dict, List
 from lib.config_parser import load_compilation_context
 from lib.driver_gen.driver_gen import build_stub
 from lib.llm.kernels.registry import choose_kernel_variant, default_kernel_registry
-from lib.llm.models.profiles import default_model_profiles, resolve_model_profile
+from lib.llm.models.catalog import default_model_profiles, resolve_model_profile
 from lib.llm.passes.pipeline import build_llm_pipeline
 from lib.llm.runtime.plan import build_runtime_plan
 from lib.llm.profiler.estimator import estimate_metrics
@@ -32,6 +32,19 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _validation_messages(hw_caps, compile_spec) -> List[str]:
+    messages: List[str] = []
+    if not hw_caps.supports_dtype(compile_spec.dtype):
+        messages.append(f"dtype {compile_spec.dtype} is not listed in hardware supported_dtypes")
+    if compile_spec.kv_cache and not hw_caps.supports_kv_cache:
+        messages.append("compile spec requires kv_cache but hardware does not advertise support")
+    if compile_spec.is_moe and compile_spec.effective_top_k_experts > max(compile_spec.num_experts, 1):
+        messages.append("effective_top_k_experts exceeds num_experts")
+    if compile_spec.num_kv_heads and compile_spec.num_kv_heads > max(compile_spec.num_heads, 1):
+        messages.append("num_kv_heads is greater than num_heads")
+    return messages
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compile planning entrypoint for LLM AI-chip workflows.")
     parser.add_argument("--hardware", required=True, help="YAML file describing hardware capabilities.")
@@ -41,18 +54,14 @@ def main() -> None:
     args = parser.parse_args()
 
     hw_caps, options, compile_spec = load_compilation_context(args.hardware, args.compile_spec)
-    # profile = resolve_model_profile(compile_spec.model_name, compile_spec.architecture or compile_spec.model_name)
-    profile = resolve_model_profile(
-        compile_spec.model_name,
-        getattr(compile_spec, "architecture", "") or compile_spec.model_name,
-    )
+    profile = resolve_model_profile(compile_spec.model_name, compile_spec.architecture or compile_spec.model_family or compile_spec.model_name)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     payload_path = Path(args.payload_mlir)
-    all_tags = list(dict.fromkeys(list(compile_spec.tags) + list(profile.tags) + [profile.family]))
-    match_op = compile_spec.match_op or profile.match_op or options.preferred_match_op
+    all_tags = list(dict.fromkeys(list(compile_spec.tags) + list(profile.extra_tags) + [profile.family]))
+    match_op = compile_spec.match_op or profile.preferred_match_op or options.preferred_match_op
     kernel_variant = choose_kernel_variant(
         match_op,
         compile_spec.mode,
@@ -61,7 +70,7 @@ def main() -> None:
         all_tags,
     )
 
-    tile_sizes = kernel_variant.preferred_tile_sizes or options.tile_sizes
+    tile_sizes = kernel_variant.preferred_tile_sizes or profile.recommended_tile_sizes(compile_spec.mode) or options.tile_sizes
 
     tile_script_path = out_dir / f"{compile_spec.kernel_name}.tile.mlir"
     build_tile_script(match_op, tile_sizes).write(tile_script_path)
@@ -90,6 +99,7 @@ def main() -> None:
     pipeline = build_llm_pipeline(hw_caps, options, compile_spec=compile_spec, kernel=kernel_variant)
     runtime_plan = build_runtime_plan(hw_caps, options, compile_spec)
     estimated_metrics = estimate_metrics(hw_caps, compile_spec, profile.family)
+    validation = _validation_messages(hw_caps, compile_spec)
 
     manifest = {
         "model_name": compile_spec.model_name,
@@ -104,6 +114,7 @@ def main() -> None:
         "pass_pipeline": pipeline,
         "runtime_plan": runtime_plan.to_dict(),
         "estimated_metrics": estimated_metrics.to_dict(),
+        "validation": validation,
         "artifacts": {
             "tile_transform": str(tile_script_path),
             "fuse_transform": str(fuse_script_path) if fuse_script_path else None,
@@ -124,6 +135,7 @@ def main() -> None:
             "",
             f"- model: {compile_spec.model_name}",
             f"- model_family: {profile.family}",
+            f"- architecture: {compile_spec.architecture or profile.family}",
             f"- kernel: {compile_spec.kernel_name}",
             f"- mode: {compile_spec.mode}",
             f"- chip: {hw_caps.name}",
@@ -132,9 +144,14 @@ def main() -> None:
             f"- selected_kernel: {kernel_variant.name}",
             f"- tile_sizes: {tile_sizes}",
             f"- kv_cache: {compile_spec.kv_cache}",
+            f"- is_moe: {compile_spec.is_moe}",
+            f"- top_k_experts: {compile_spec.effective_top_k_experts}",
+            f"- dominant_bound: {estimated_metrics.dominant_bound}",
             f"- payload: {payload_path}",
             f"- est_latency_ms: {estimated_metrics.estimated_latency_ms:.4f}",
             f"- est_tokens_per_sec: {estimated_metrics.estimated_tokens_per_sec:.2f}",
+            f"- est_compute_utilization: {estimated_metrics.estimated_compute_utilization:.3f}",
+            f"- est_memory_utilization: {estimated_metrics.estimated_memory_utilization:.3f}",
         ]
     ) + "\n"
     _write_text(out_dir / "compilation_summary.md", summary)
@@ -149,6 +166,7 @@ def main() -> None:
             f"  tile transform: {tile_script_path}",
             f"  outline transform: {outline_script_path}",
             f"  driver stub: {stub_path}",
+            f"  validation_warnings: {len(validation)}",
         ]
     ) + "\n"
     _write_text(out_dir / "README.txt", plan_text)

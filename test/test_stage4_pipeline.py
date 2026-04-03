@@ -37,6 +37,53 @@ class Stage4PipelineTests(unittest.TestCase):
         self.assertIn("ai_launch_kernel", code)
         self.assertIn("experts-done", code)
 
+
+    def test_decode_attention_end_to_end_engine(self):
+        env = os.environ.copy()
+        env["PYTHONPATH"] = "."
+        with tempfile.TemporaryDirectory() as tmpdir:
+            compile_out = Path(tmpdir) / "compile"
+            backend_out = Path(tmpdir) / "backend"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "compile.py",
+                    "--hardware",
+                    "examples/llm_stage4/hardware.yaml",
+                    "--compile-spec",
+                    "examples/llm_stage4/deepseek_decode.yaml",
+                    "--payload-mlir",
+                    "examples/llm_stage4/decode_moe_payload.mlir",
+                    "--out-dir",
+                    str(compile_out),
+                ],
+                cwd=".",
+                env=env,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "apply_pipeline.py",
+                    "--manifest",
+                    str(compile_out / "compile_manifest.json"),
+                    "--out-dir",
+                    str(backend_out),
+                ],
+                cwd=".",
+                env=env,
+                check=True,
+            )
+            optimized = (backend_out / "optimized.mlir").read_text(encoding="utf-8")
+            backend_ir = (backend_out / "backend.ll").read_text(encoding="utf-8")
+            metrics = json.loads((backend_out / "backend_metrics.json").read_text(encoding="utf-8"))
+            self.assertIn('legend_decode_attention', optimized)
+            self.assertIn('legend_moe_decode', optimized)
+            self.assertIn('@legend_decode_attention', backend_ir)
+            self.assertIn('@legend_moe_decode', backend_ir)
+            self.assertTrue(metrics["used_inrepo_pass_engine"])
+            self.assertGreaterEqual(metrics["num_llvm_calls"], 4)
+
     def test_compile_and_apply(self):
         env = os.environ.copy()
         env["PYTHONPATH"] = "."

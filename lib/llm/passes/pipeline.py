@@ -16,13 +16,15 @@ def build_llm_pipeline(hw_caps: HardwareCaps, options: CompilerOptions, compile_
         "kernel": [],
         "buffer": [],
         "runtime": [],
-        "backend": ["lower-affine", "convert-scf-to-cf", "finalize-memref-to-llvm"],
+        "backend": ["canonicalize", "lower-affine", "convert-scf-to-cf", "finalize-memref-to-llvm"],
     }
 
     if options.enable_fusion:
         stages["kernel"].append("llm-fuse-attention-chain")
     if compile_spec and compile_spec.kv_cache:
         stages["kernel"].append("llm-materialize-kv-cache")
+    if compile_spec and compile_spec.is_moe:
+        stages["kernel"].append("llm-lower-moe-routing")
     stages["kernel"].append(f"llm-tile[{','.join(str(v) for v in options.tile_sizes)}]")
     if hw_caps.supports_fused_epilogue:
         stages["kernel"].append("llm-fuse-epilogue")
@@ -36,5 +38,7 @@ def build_llm_pipeline(hw_caps: HardwareCaps, options: CompilerOptions, compile_
         stages["runtime"].append("llm-emit-events")
     if hw_caps.supports_kv_cache and compile_spec and compile_spec.kv_cache:
         stages["runtime"].append("llm-allocate-kv-cache")
+    if compile_spec and compile_spec.is_moe:
+        stages["runtime"].append("llm-emit-moe-dispatch")
     stages["runtime"].append("llm-emit-launch-plan")
     return stages

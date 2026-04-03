@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Generate reusable C host stubs for AI-chip kernels.
-
-This generator is intentionally simple and standalone so it can be used
-independently from the legacy config parser while the repo transitions toward
-an LLM compiler stack.
-"""
+"""Generate reusable C host stubs for AI-chip kernels."""
 
 from __future__ import annotations
 
@@ -39,6 +34,15 @@ class TensorArg:
             raise ValueError(f"Unsupported dtype: {self.dtype}") from exc
 
 
+@dataclass
+class ABIRegisterMap:
+    kernel_id_offset: int = 0x00
+    control_offset: int = 0x08
+    status_offset: int = 0x10
+    arg_base_offset: int = 0x40
+    arg_stride_words: int = 4
+
+
 def _sanitize_names(names: Iterable[str]) -> List[str]:
     result = []
     for raw in names:
@@ -51,7 +55,8 @@ def _sanitize_names(names: Iterable[str]) -> List[str]:
     return result
 
 
-def build_stub(kernel_name: str, mode: str, dtype: str, inputs: List[str], outputs: List[str]) -> str:
+def build_stub(kernel_name: str, mode: str, dtype: str, inputs: List[str], outputs: List[str], regmap: ABIRegisterMap | None = None) -> str:
+    regmap = regmap or ABIRegisterMap()
     input_args = [TensorArg(name, dtype) for name in inputs]
     output_args = [TensorArg(name, dtype) for name in outputs]
     all_args = input_args + output_args
@@ -69,18 +74,26 @@ def build_stub(kernel_name: str, mode: str, dtype: str, inputs: List[str], outpu
         "#include <stddef.h>",
         "",
         abi_struct.rstrip(),
+        "typedef struct {",
+        "  uint32_t kernel_slot;",
+        "  uint32_t mode;",
+        "  uint32_t num_inputs;",
+        "  uint32_t num_outputs;",
+        "} ai_launch_header;",
+        "",
         f"// Auto-generated host stub for mode={mode}, kernel={kernel_name}",
         f"void {kernel_name}_launch({fn_args}) {{",
-        "  // TODO: Replace placeholder register map with accelerator-specific layout.",
-        "  volatile uint64_t *accel_kernel_id = (volatile uint64_t *)(accelerator_base + 0x00);",
-        "  volatile uint64_t *accel_arg_base = (volatile uint64_t *)(accelerator_base + 0x40);",
-        "  volatile uint64_t *accel_ctrl = (volatile uint64_t *)(accelerator_base + 0x08);",
+        f"  volatile uint64_t *accel_kernel_id = (volatile uint64_t *)(accelerator_base + 0x{regmap.kernel_id_offset:02x});",
+        f"  volatile uint64_t *accel_ctrl = (volatile uint64_t *)(accelerator_base + 0x{regmap.control_offset:02x});",
+        f"  volatile uint64_t *accel_status = (volatile uint64_t *)(accelerator_base + 0x{regmap.status_offset:02x});",
+        f"  volatile uint64_t *accel_arg_base = (volatile uint64_t *)(accelerator_base + 0x{regmap.arg_base_offset:02x});",
         "",
         f"  *accel_kernel_id = 0; // kernel slot for {kernel_name}",
+        "  accel_arg_base[0] = (uint64_t)(sizeof(ai_launch_header));",
     ]
 
-    for index, arg in enumerate(all_args):
-        offset = index * 4
+    for index, arg in enumerate(all_args, start=1):
+        offset = index * regmap.arg_stride_words
         lines.extend(
             [
                 f"  accel_arg_base[{offset + 0}] = (uint64_t){arg.name}.data;",
@@ -95,7 +108,7 @@ def build_stub(kernel_name: str, mode: str, dtype: str, inputs: List[str], outpu
             "",
             "  (void)dma_flags; // reserved for async DMA orchestration",
             "  *accel_ctrl = 0x1;",
-            "  while (((*accel_ctrl) & 0x4) != 0x4) {",
+            "  while (((*accel_status) & 0x1) == 0) {",
             "    ;",
             "  }",
             "}",
