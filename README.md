@@ -111,57 +111,5 @@ The current framework is structured to support multiple LLM families, including:
 
 This makes v2 more suitable than v1 for modern LLM architecture studies.
 
----
-=======
-# Legend AI Chip Compiler Simulator
 
-This repository now contains a stronger LLM-oriented compiler prototype with a
-real in-repo pass engine for a supported MLIR subset.
-
-## Highlights
-
-- Unified model profiles for LLaMA / DeepSeek / Mixtral / Qwen / OPT.
-- Compile planning for prefill / decode / MoE kernels.
-- Real ordered pass execution when external `mlir-opt` is unavailable.
-- End-to-end decode-attention and MoE lowering examples.
-- Runtime launch plan generation with DMA, events, KV-cache, and MoE dispatch.
-- Backend IR emission that reflects lowered kernels rather than placeholder-only output.
-
-## Main flow
-
-```bash
-PYTHONPATH=. python compile.py \
-  --hardware examples/llm_stage4/hardware.yaml \
-  --compile-spec examples/llm_stage4/deepseek_decode.yaml \
-  --payload-mlir examples/llm_stage4/decode_moe_payload.mlir \
-  --out-dir out/compile
-
-PYTHONPATH=. python apply_pipeline.py \
-  --manifest out/compile/compile_manifest.json \
-  --out-dir out/backend
-```
-
-Artifacts:
-
-- `compile_manifest.json`: full compile request and selected kernel.
-- `optimized.mlir`: output of the real in-repo pass engine or external `mlir-opt`.
-- `backend.ll`: lowered backend entry with concrete intrinsic calls.
-- `runtime_launch.c`: runtime orchestration code for launches and events.
-- `backend_metrics.json`: pass execution and lowered op statistics.
-
-## New example payloads
-
-- `examples/llm_stage4/decode_attention_payload.mlir`
-- `examples/llm_stage4/decode_moe_payload.mlir`
-
-These payloads exercise the decode attention and MoE lowering paths directly.
-
-## Validation
-
-```bash
-pytest -q
-```
-
-Current test suite covers compile planning, runtime code generation, transform
-script generation, and the end-to-end decode attention / MoE path.
 
